@@ -1,0 +1,27 @@
+{
+  "target": "local",
+  "region": "us-east-1",
+  "github_repository": "Luxzor/DevOps_Test",
+  "owner": "luis",
+  "log_metric_filters": false,
+  "environments": {
+    "dev": {
+      "account_id": "111111111111",
+      "endpoint": "http://localhost:4566",
+      "app_url": "http://localhost:8081",
+      "alb_listener_port": 8080
+    },
+    "staging": {
+      "account_id": "222222222222",
+      "endpoint": "http://localhost:4567",
+      "app_url": "http://localhost:8082",
+      "alb_listener_port": 8080
+    },
+    "prod": {
+      "account_id": "333333333333",
+      "endpoint": "http://localhost:4568",
+      "app_url": "http://localhost:8083",
+      "alb_listener_port": 8080
+    }
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "target": "aws",
+  "region": "us-east-1",
+  "github_repository": "Luxzor/DevOps_Test",
+  "owner": "luis",
+  "log_metric_filters": true,
+  "environments": {
+    "dev": {
+      "account_id": "REEMPLAZAR_CON_ID_DE_CUENTA_DEV",
+      "endpoint": null,
+      "app_url": null,
+      "alb_listener_port": 80
+    },
+    "staging": {
+      "account_id": "REEMPLAZAR_CON_ID_DE_CUENTA_STAGING",
+      "endpoint": null,
+      "app_url": null,
+      "alb_listener_port": 80
+    },
+    "prod": {
+      "account_id": "REEMPLAZAR_CON_ID_DE_CUENTA_PROD",
+      "endpoint": null,
+      "app_url": null,
+      "alb_listener_port": 80
+    }
+  }
+}
