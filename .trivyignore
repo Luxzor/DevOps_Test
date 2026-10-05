@@ -1,0 +1,6 @@
+# Excepciones de Trivy. Cada línea es un ID de vulnerabilidad (CVE-...) que se acepta
+# temporalmente. Toda excepción debe llevar: motivo, quién la aprobó y fecha de revisión.
+# Preferir siempre actualizar la imagen base o la dependencia antes que agregar una línea.
+#
+# Ejemplo:
+# CVE-2026-00000  # sin parche en Debian estable; no afecta (la app no usa regex de usuario). Luis, revisar 2026-11-01
