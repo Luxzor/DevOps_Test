@@ -1,0 +1,40 @@
+[project]
+name = "tasks-api"
+version = "0.1.0"
+description = "API REST de ejemplo para practicar CI/CD con GitHub Actions y AWS"
+requires-python = ">=3.11"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "SIM", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S104", "S603"]
+
+[tool.mypy]
+python_version = "3.11"
+mypy_path = "src"
+packages = ["tasks_api"]
+strict = true
+plugins = ["pydantic.mypy"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+markers = ["integration: prueba que levanta un servidor HTTP real"]
+addopts = "-ra --strict-markers"
+# Aviso de Starlette sobre su TestClient; no afecta a la app ni al servidor de producción.
+filterwarnings = ["ignore:Using `httpx` with `starlette.testclient`"]
+
+[tool.coverage.run]
+source = ["tasks_api"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+skip_covered = false

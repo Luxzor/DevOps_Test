@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+junit.xml
+htmlcov/
+
+# Terraform: el estado nunca va a Git (contiene datos sensibles y vive en S3)
+.terraform/
+*.tfstate
+*.tfstate.*
+terraform.tfstate.d/
+tfplan
+plan.log
+crash.log
+*.tfvars.json
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Artefactos de CI y simulación
+image.tar.gz
+sarif/
+
+# Editores y sistema
+.idea/
+.vscode/
+.DS_Store
+*.swp
+.env

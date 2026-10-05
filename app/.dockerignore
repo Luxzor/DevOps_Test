@@ -1,0 +1,5 @@
+# Solo entra a la imagen lo que necesita el runtime.
+*
+!requirements.txt
+!src/tasks_api/**
+**/__pycache__
