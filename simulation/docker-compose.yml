@@ -1,0 +1,119 @@
+# Simulación de tres cuentas de AWS (dev, staging, prod) con el emulador Floci.
+#
+# Cada instancia es una "cuenta" aislada: su propio ID de cuenta, su propio puerto de API,
+# su propia red de Docker para las tareas de ECS y su propio volumen de estado.
+#
+#   docker compose -f simulation/docker-compose.yml up -d
+#
+# Puertos en el host:
+#   API de AWS      dev 4566 | staging 4567 | prod 4568
+#   ALB (la app)    dev 8081 | staging 8082 | prod 8083
+#
+# El servicio `runner` (perfil opcional) es el runner autohospedado de GitHub Actions.
+
+x-floci: &floci
+  image: floci/floci:2.1.0@sha256:f5aa8c18302cedb4f2385f5c4e455b3efc77fee6bf7b6e5d1712b2817ba102db
+  restart: unless-stopped
+  # El healthcheck de la imagen asume el puerto 4566; este usa el FLOCI_PORT de cada instancia.
+  healthcheck:
+    test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/$${FLOCI_PORT} && printf 'GET /_floci/health HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && read -r _ code _ <&3 && [ \"$$code\" = 200 ]"]
+    interval: 5s
+    timeout: 3s
+    retries: 10
+
+x-floci-env: &floci-env
+  FLOCI_DEFAULT_REGION: us-east-1
+  # El estado (incluido el bucket del estado de Terraform) sobrevive a reinicios.
+  FLOCI_STORAGE_MODE: persistent
+  FLOCI_STORAGE_PERSISTENT_PATH: /app/data
+  # URIs de ECR con forma localhost:<puerto>/<cuenta>/<región>/<repo>. Funciona en cualquier
+  # sistema sin configurar DNS para *.localhost.
+  FLOCI_SERVICES_ECR_URI_STYLE: path
+
+services:
+  floci-dev:
+    <<: *floci
+    container_name: floci-dev
+    ports: ["127.0.0.1:4566:4566", "127.0.0.1:8081:8080"]
+    environment:
+      <<: *floci-env
+      FLOCI_DEFAULT_ACCOUNT_ID: "111111111111"
+      # El puerto que escucha y que anuncia en las URIs de ECR deben coincidir con el del host.
+      FLOCI_PORT: "4566"
+      FLOCI_BASE_URL: http://localhost:4566
+      FLOCI_DOCKER_RESOURCE_NAMESPACE: dev
+      FLOCI_SERVICES_DOCKER_NETWORK: sim-dev
+    networks: [sim-dev]
+    volumes:
+      # Floci arranca contenedores reales para las tareas de ECS y el registro de ECR.
+      - /var/run/docker.sock:/var/run/docker.sock
+      - floci-dev-data:/app/data
+
+  floci-staging:
+    <<: *floci
+    container_name: floci-staging
+    ports: ["127.0.0.1:4567:4567", "127.0.0.1:8082:8080"]
+    environment:
+      <<: *floci-env
+      FLOCI_DEFAULT_ACCOUNT_ID: "222222222222"
+      # El puerto que escucha y que anuncia en las URIs de ECR deben coincidir con el del host.
+      FLOCI_PORT: "4567"
+      FLOCI_BASE_URL: http://localhost:4567
+      FLOCI_DOCKER_RESOURCE_NAMESPACE: staging
+      FLOCI_SERVICES_DOCKER_NETWORK: sim-staging
+    networks: [sim-staging]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - floci-staging-data:/app/data
+
+  floci-prod:
+    <<: *floci
+    container_name: floci-prod
+    ports: ["127.0.0.1:4568:4568", "127.0.0.1:8083:8080"]
+    environment:
+      <<: *floci-env
+      FLOCI_DEFAULT_ACCOUNT_ID: "333333333333"
+      # El puerto que escucha y que anuncia en las URIs de ECR deben coincidir con el del host.
+      FLOCI_PORT: "4568"
+      FLOCI_BASE_URL: http://localhost:4568
+      FLOCI_DOCKER_RESOURCE_NAMESPACE: prod
+      FLOCI_SERVICES_DOCKER_NETWORK: sim-prod
+    networks: [sim-prod]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - floci-prod-data:/app/data
+
+  # Runner autohospedado de GitHub Actions. Úsalo SOLO con un repositorio privado:
+  # en uno público cualquiera podría ejecutar código en tu computadora con un Pull Request.
+  #   RUNNER_REPO_URL=https://github.com/<owner>/<repo> RUNNER_TOKEN=<token> \
+  #     docker compose -f simulation/docker-compose.yml --profile runner up -d --build
+  runner:
+    profiles: [runner]
+    build: ./runner
+    container_name: gha-runner
+    restart: unless-stopped
+    # Red del host: el runner ve los emuladores y los ALB en localhost, igual que tú.
+    network_mode: host
+    environment:
+      # Se validan en el entrypoint; aquí quedan opcionales para no bloquear los emuladores.
+      RUNNER_REPO_URL: ${RUNNER_REPO_URL:-}
+      RUNNER_TOKEN: ${RUNNER_TOKEN:-}
+      RUNNER_NAME: ${RUNNER_NAME:-sim-runner}
+      RUNNER_LABELS: sim
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - runner-work:/home/runner/_work
+
+networks:
+  sim-dev:
+    name: sim-dev
+  sim-staging:
+    name: sim-staging
+  sim-prod:
+    name: sim-prod
+
+volumes:
+  floci-dev-data:
+  floci-staging-data:
+  floci-prod-data:
+  runner-work:
