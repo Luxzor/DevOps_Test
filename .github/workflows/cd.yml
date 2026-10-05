@@ -1,0 +1,127 @@
+# Entrega continua. Arranca cuando el CI de main termina en verde y promueve la MISMA imagen
+# (construida una sola vez en CI) por los ambientes:
+#
+#   1. dev: automático, con smoke test
+#   2. staging: automático, con pruebas end to end
+#   3. release-please: crea el release si se fusionó el PR de release
+#   4. prod: solo si hubo release, con aprobación manual y vigilancia de alarmas
+name: CD
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+# Los despliegues se encolan; nunca se cancelan a mitad de camino.
+concurrency:
+  group: cd
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    name: CI de main en verde
+    if: >-
+      github.event.workflow_run.conclusion == 'success'
+      && github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.sha.outputs.sha }}
+    steps:
+      - id: sha
+        env:
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "### Desplegando \`$SHA\`" >> "$GITHUB_STEP_SUMMARY"
+
+  dev:
+    needs: gate
+    uses: ./.github/workflows/deploy.yml
+    permissions:
+      contents: read
+      id-token: write
+      actions: read
+    with:
+      environment: dev
+      image_tag: ${{ needs.gate.outputs.sha }}
+      artifact_run_id: ${{ github.event.workflow_run.id }}
+
+  staging:
+    needs: [gate, dev]
+    uses: ./.github/workflows/deploy.yml
+    permissions:
+      contents: read
+      id-token: write
+      actions: read
+    with:
+      environment: staging
+      image_tag: ${{ needs.gate.outputs.sha }}
+      promote_from: dev
+      run_e2e: true
+
+  # release-please lee los Conventional Commits y mantiene un Pull Request de release con el
+  # CHANGELOG y la nueva versión. Al fusionarlo, crea el tag vX.Y.Z y el release de GitHub,
+  # y entonces se habilita el despliegue a producción.
+  release:
+    name: Release
+    needs: [gate, staging]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      created: ${{ steps.release.outputs.release_created }}
+      tag: ${{ steps.release.outputs.tag_name }}
+      sha: ${{ steps.release.outputs.sha }}
+    steps:
+      - uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4.4.1
+        id: release
+        with:
+          # Con el GITHUB_TOKEN el PR de release no dispara el CI (regla de GitHub para evitar
+          # bucles). Un token de GitHub App o un PAT con permisos mínimos lo resuelve.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          target-branch: main
+
+  prod:
+    needs: [release]
+    if: needs.release.outputs.created == 'true'
+    uses: ./.github/workflows/deploy.yml
+    permissions:
+      contents: read
+      id-token: write
+      actions: read
+    with:
+      environment: prod
+      image_tag: ${{ needs.release.outputs.sha }}
+      promote_from: staging
+      watch_minutes: ${{ fromJSON(vars.PROD_WATCH_MINUTES || '10') }}
+
+  summary:
+    name: Versiones desplegadas
+    if: always() && needs.gate.result == 'success'
+    needs: [gate, dev, staging, release, prod]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - env:
+          SHA: ${{ needs.gate.outputs.sha }}
+          DEV: ${{ needs.dev.result }}
+          STAGING: ${{ needs.staging.result }}
+          PROD: ${{ needs.prod.result }}
+          TAG: ${{ needs.release.outputs.tag }}
+        run: |
+          {
+            echo "| Ambiente | Resultado | Versión |"
+            echo "| --- | --- | --- |"
+            echo "| dev | $DEV | \`$SHA\` |"
+            echo "| staging | $STAGING | \`$SHA\` |"
+            echo "| prod | ${PROD:-skipped} | ${TAG:-sin release} |"
+          } >> "$GITHUB_STEP_SUMMARY"

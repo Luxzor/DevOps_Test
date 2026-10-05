@@ -1,0 +1,57 @@
+# Actualizaciones automáticas de dependencias. Cada PR pasa por el CI completo.
+# Las alertas de dependencias vulnerables se activan en Settings > Advanced Security.
+version: 2
+
+updates:
+  - package-ecosystem: pip
+    directory: /app
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      python-dev:
+        patterns: ["pytest*", "ruff", "mypy", "moto*", "boto3-stubs*", "httpx"]
+    commit-message:
+      prefix: "build(deps)"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "ci(deps)"
+
+  - package-ecosystem: terraform
+    directories:
+      - /infra/bootstrap
+      - /infra/environments/*
+      - /infra/modules/*
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      terraform:
+        patterns: ["*"]
+    commit-message:
+      prefix: "build(deps)"
+
+  - package-ecosystem: docker
+    directories:
+      - /app
+      - /simulation/runner
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: "build(deps)"
+
+  - package-ecosystem: docker-compose
+    directory: /simulation
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: "build(deps)"

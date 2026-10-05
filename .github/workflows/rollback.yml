@@ -1,0 +1,57 @@
+# Rollback manual: vuelve a desplegar en un ambiente una versión anterior indicando solo su
+# etiqueta. Acepta el hash del commit (etiqueta de la imagen) o un tag de release (v1.2.3).
+# La imagen ya existe en el ECR del ambiente porque pasó por él antes: no se reconstruye.
+# En prod, el Environment exige la misma aprobación que un despliegue normal.
+name: Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Ambiente
+        type: choice
+        options: [dev, staging, prod]
+        required: true
+      version:
+        description: Hash del commit o tag de release (por ejemplo v1.2.0)
+        type: string
+        required: true
+
+concurrency:
+  group: cd
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    name: Resolver versión
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: resolve
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          sha="$(git rev-parse --verify --quiet "$VERSION^{commit}")" \
+            || { echo "::error::No existe el commit o tag '$VERSION'"; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "### Rollback de ${{ inputs.environment }} a \`$VERSION\` (\`$sha\`)" >> "$GITHUB_STEP_SUMMARY"
+
+  rollback:
+    needs: resolve
+    uses: ./.github/workflows/deploy.yml
+    permissions:
+      contents: read
+      id-token: write
+      actions: read
+    with:
+      environment: ${{ inputs.environment }}
+      image_tag: ${{ needs.resolve.outputs.sha }}

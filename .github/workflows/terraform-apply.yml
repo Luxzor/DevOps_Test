@@ -1,0 +1,80 @@
+# Workflow reutilizable: plan + apply (o destroy) de Terraform en un ambiente.
+# Corre ligado al GitHub Environment, así que prod exige aprobación manual antes de empezar.
+name: Terraform apply (reutilizable)
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        type: string
+        required: true
+      action:
+        description: plan, apply o destroy
+        type: string
+        default: apply
+      confirm:
+        description: Confirmación para destroy (debe ser igual al ambiente)
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  TERRAFORM_VERSION: "1.13.3"
+  TARGET: ${{ vars.DEPLOY_TARGET || 'local' }}
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+
+jobs:
+  terraform:
+    name: ${{ inputs.action }} · ${{ inputs.environment }}
+    runs-on: ${{ fromJSON(vars.DEPLOY_TARGET == 'aws' && '["ubuntu-latest"]' || '["self-hosted","sim"]') }}
+    timeout-minutes: 45
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ENVIRONMENT: ${{ inputs.environment }}
+      ACTION: ${{ inputs.action }}
+    steps:
+      - name: Validar la solicitud
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          case "$ACTION" in plan | apply | destroy) ;; *) echo "::error::Acción inválida: $ACTION"; exit 1 ;; esac
+          if [ "$ACTION" = destroy ] && [ "$CONFIRM" != "$ENVIRONMENT" ]; then
+            echo "::error::Para destruir $ENVIRONMENT escribe su nombre en el campo de confirmación"
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+      - name: Configuración del destino
+        id: target
+        run: scripts/gha-target.sh "$ENVIRONMENT" | tee -a "$GITHUB_OUTPUT"
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ steps.target.outputs.terraform_role }}
+          role-session-name: terraform-${{ inputs.environment }}-${{ github.run_id }}
+          aws-region: ${{ steps.target.outputs.region }}
+          sts-endpoint: ${{ steps.target.outputs.endpoint }}
+      - run: scripts/tf.sh "$ENVIRONMENT" init
+      - name: terraform plan
+        run: |
+          flags=(-no-color -lock-timeout=300s -out=tfplan)
+          [ "$ACTION" = destroy ] && flags+=(-destroy)
+          scripts/tf.sh "$ENVIRONMENT" plan "${flags[@]}" | tee plan.log
+          {
+            echo "### Terraform $ACTION · $ENVIRONMENT"
+            grep -E '^(Plan:|No changes)' plan.log || true
+          } >> "$GITHUB_STEP_SUMMARY"
+      # Se aplica exactamente el plan revisado arriba (archivo tfplan), no uno nuevo.
+      - name: terraform ${{ inputs.action }}
+        if: inputs.action != 'plan'
+        run: scripts/tf.sh "$ENVIRONMENT" apply -no-color -lock-timeout=300s tfplan

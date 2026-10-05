@@ -1,0 +1,217 @@
+# Integración continua: corre en cada Pull Request y en cada push a main.
+# Es requisito para fusionar (el job "ci-ok" es el check obligatorio de la rama main).
+# Objetivo: menos de 10 minutos. Los jobs que no dependen entre sí corren en paralelo.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Un push nuevo a un Pull Request cancela la ejecución anterior, que ya quedó obsoleta.
+# En main no se cancela: cada commit debe producir su imagen para el CD.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Permisos mínimos por defecto; cada job pide solo lo que necesita.
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.12"
+  TERRAFORM_VERSION: "1.13.3"
+
+jobs:
+  app-lint:
+    name: App · lint, formato y tipos
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: app/requirements*.txt
+      - run: pip install -r requirements-dev.txt
+      - run: ruff check --output-format=github .
+      - run: ruff format --check .
+      - run: mypy
+
+  app-test:
+    name: App · pruebas y cobertura
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: app/requirements*.txt
+      - run: pip install -r requirements-dev.txt
+      # El umbral de cobertura (80 %) está en pyproject.toml: bajo el umbral, el job falla.
+      - name: Pruebas unitarias e integración
+        run: pytest --cov --cov-report=term --cov-report=xml --junitxml=junit.xml
+      - name: Resumen de cobertura
+        if: always()
+        run: |
+          python - <<'EOF' >> "$GITHUB_STEP_SUMMARY"
+          import xml.etree.ElementTree as ET
+          rate = float(ET.parse("coverage.xml").getroot().get("line-rate")) * 100
+          print(f"### Cobertura: {rate:.1f} % (mínimo 80 %)")
+          EOF
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: test-reports
+          path: |
+            app/coverage.xml
+            app/junit.xml
+          retention-days: 14
+
+  secrets-scan:
+    name: Seguridad · secretos filtrados (Gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # todo el historial: un secreto borrado sigue en commits viejos
+          persist-credentials: false
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
+
+  dependency-scan:
+    name: Seguridad · dependencias vulnerables (Trivy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Escaneo de dependencias y configuración
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+  terraform:
+    name: Infra · fmt, validate y análisis (Checkov)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+      - name: terraform fmt
+        run: terraform fmt -check -recursive -diff infra
+      - name: terraform validate
+        run: |
+          for dir in infra/bootstrap infra/environments/*; do
+            echo "::group::$dir"
+            terraform -chdir="$dir" init -backend=false -input=false >/dev/null
+            terraform -chdir="$dir" validate
+            echo "::endgroup::"
+          done
+      # Las excepciones se justifican en el código con comentarios #checkov:skip.
+      - name: Checkov
+        uses: bridgecrewio/checkov-action@7b1bd992e2c40a3404e3511944aeb8d014703d9a # v12.3129.0
+        with:
+          directory: infra
+          framework: terraform
+          quiet: true
+          compact: true
+          download_external_modules: false
+
+  image:
+    name: Imagen · build y escaneo
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Versión de la app
+        id: meta
+        run: echo "version=$(grep -m1 '^version' app/pyproject.toml | cut -d'"' -f2)" >> "$GITHUB_OUTPUT"
+      # Caché de capas en GitHub Actions: si solo cambia el código, no se reinstalan dependencias.
+      - name: Build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: app
+          load: true
+          push: false
+          tags: tasks-api:${{ github.sha }}
+          build-args: |
+            GIT_SHA=${{ github.sha }}
+            APP_VERSION=${{ steps.meta.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+      - name: Escaneo de vulnerabilidades de la imagen
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: tasks-api:${{ github.sha }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: Prueba del contenedor
+        run: |
+          docker run -d --name api -p 8000:8000 tasks-api:${{ github.sha }}
+          for _ in $(seq 1 30); do curl -sf localhost:8000/health && break; sleep 1; done
+          test "$(curl -sf localhost:8000/version | jq -r .commit)" = "${{ github.sha }}"
+          test "$(docker inspect api --format '{{.Config.User}}')" = "10001:10001"
+          docker rm -f api
+      # Construir una sola vez: la imagen de main se guarda y el CD la publica y la promueve.
+      - name: Guardar imagen para el CD
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: docker save tasks-api:${{ github.sha }} | gzip > image.tar.gz
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        with:
+          name: image
+          path: image.tar.gz
+          retention-days: 7
+          compression-level: 0
+
+  # Un único check obligatorio para la protección de rama, sin tener que listar cada job.
+  ci-ok:
+    name: ci-ok
+    if: always()
+    needs: [app-lint, app-test, secrets-scan, dependency-scan, terraform, image]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Todos los jobs en verde
+        env:
+          RESULTS: ${{ toJSON(needs.*.result) }}
+        run: |
+          echo "$RESULTS"
+          echo "$RESULTS" | jq -e 'all(. == "success")' >/dev/null

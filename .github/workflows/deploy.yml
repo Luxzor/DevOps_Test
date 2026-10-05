@@ -1,0 +1,141 @@
+# Workflow reutilizable de despliegue: la misma lógica para dev, staging y prod.
+# Lo llaman cd.yml (despliegue continuo) y rollback.yml (volver a una versión anterior).
+name: Deploy (reutilizable)
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: dev, staging o prod (también es el nombre del GitHub Environment)
+        type: string
+        required: true
+      image_tag:
+        description: Hash del commit de la imagen a desplegar
+        type: string
+        required: true
+      artifact_run_id:
+        description: Ejecución de CI con la imagen construida (solo para publicarla en dev)
+        type: string
+        default: ""
+      promote_from:
+        description: Ambiente desde el que se copia la imagen (dev para staging, staging para prod)
+        type: string
+        default: ""
+      run_e2e:
+        description: Ejecutar las pruebas end to end después de desplegar
+        type: boolean
+        default: false
+      watch_minutes:
+        description: Minutos de vigilancia de alarmas después de desplegar (0 = no vigilar)
+        type: number
+        default: 0
+    outputs:
+      url:
+        description: URL de la app en el ambiente
+        value: ${{ jobs.deploy.outputs.url }}
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: ${{ inputs.environment }}
+    # Simulación: runner autohospedado (alcanza los emuladores en localhost).
+    # AWS real: runner de GitHub.
+    runs-on: ${{ fromJSON(vars.DEPLOY_TARGET == 'aws' && '["ubuntu-latest"]' || '["self-hosted","sim"]') }}
+    timeout-minutes: 40
+    # El Environment aplica las reglas de protección (revisores en prod, ramas permitidas)
+    # y es parte de la identidad OIDC: el rol de IAM solo confía en este Environment.
+    environment:
+      name: ${{ inputs.environment }}
+      url: ${{ steps.deploy.outputs.url }}
+    permissions:
+      contents: read
+      id-token: write # pedir el token OIDC a GitHub
+      actions: read # descargar la imagen de la ejecución de CI
+    outputs:
+      url: ${{ steps.deploy.outputs.url }}
+    env:
+      TARGET: ${{ vars.DEPLOY_TARGET || 'local' }}
+      ENVIRONMENT: ${{ inputs.environment }}
+      IMAGE_TAG: ${{ inputs.image_tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Configuración del destino
+        id: target
+        run: scripts/gha-target.sh "$ENVIRONMENT" | tee -a "$GITHUB_OUTPUT"
+
+      # Credenciales temporales por OIDC: sin llaves de AWS guardadas en GitHub.
+      - name: Credenciales de AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ steps.target.outputs.deploy_role }}
+          role-session-name: deploy-${{ inputs.environment }}-${{ github.run_id }}
+          aws-region: ${{ steps.target.outputs.region }}
+          sts-endpoint: ${{ steps.target.outputs.endpoint }}
+          role-duration-seconds: 3600
+
+      - name: Versión actual
+        id: previous
+        run: |
+          source scripts/lib.sh && use_env "$ENVIRONMENT"
+          tag="$(aws ssm get-parameter --name "$(ssm_prefix "$ENVIRONMENT")/image-tag" \
+            --query Parameter.Value --output text)"
+          echo "tag=$tag" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Descargar la imagen construida en CI
+        if: inputs.artifact_run_id != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: image
+          run-id: ${{ inputs.artifact_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/image
+
+      - name: Publicar la imagen en ECR
+        if: inputs.artifact_run_id != ''
+        run: |
+          gunzip -c "$RUNNER_TEMP/image/image.tar.gz" | docker load
+          scripts/publish-image.sh "$ENVIRONMENT" "tasks-api:$IMAGE_TAG" "$IMAGE_TAG"
+
+      - name: Promover la imagen desde ${{ inputs.promote_from }}
+        if: inputs.promote_from != ''
+        env:
+          FROM: ${{ inputs.promote_from }}
+        run: scripts/promote-image.sh "$FROM" "$ENVIRONMENT" "$IMAGE_TAG"
+
+      - name: Desplegar en ECS
+        id: deploy
+        run: |
+          source scripts/lib.sh && use_env "$ENVIRONMENT"
+          echo "url=$(aws ssm get-parameter --name "$(ssm_prefix "$ENVIRONMENT")/app-url" \
+            --query Parameter.Value --output text)" >> "$GITHUB_OUTPUT"
+          scripts/deploy.sh "$ENVIRONMENT" "$IMAGE_TAG"
+
+      - name: Pruebas end to end
+        id: e2e
+        if: inputs.run_e2e
+        run: scripts/e2e-test.sh "$ENVIRONMENT"
+
+      - name: Vigilar alarmas ${{ inputs.watch_minutes }} minutos
+        id: watch
+        if: inputs.watch_minutes > 0
+        env:
+          MINUTES: ${{ inputs.watch_minutes }}
+        run: scripts/watch-alarms.sh "$ENVIRONMENT" "$MINUTES"
+
+      # deploy.sh ya revierte si falla el smoke test. Si la versión nueva quedó desplegada
+      # pero fallan las pruebas o se dispara una alarma, se vuelve a la versión anterior.
+      - name: Rollback automático
+        if: >-
+          failure() && steps.deploy.outcome == 'success'
+          && steps.previous.outputs.tag != 'bootstrap'
+          && steps.previous.outputs.tag != inputs.image_tag
+        env:
+          PREVIOUS: ${{ steps.previous.outputs.tag }}
+        run: |
+          echo "### :rewind: $ENVIRONMENT: vuelta a \`$PREVIOUS\`" >> "$GITHUB_STEP_SUMMARY"
+          scripts/deploy.sh "$ENVIRONMENT" "$PREVIOUS"

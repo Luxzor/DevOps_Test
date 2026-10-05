@@ -1,0 +1,7 @@
+# Revisión obligatoria (con "Require review from Code Owners" en la protección de main).
+# Infraestructura y pipelines son las zonas de mayor impacto: siempre pasan por su dueño.
+*                     @Luxzor
+/infra/               @Luxzor
+/scripts/             @Luxzor
+/simulation/          @Luxzor
+/.github/             @Luxzor
