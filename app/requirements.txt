@@ -1,6 +1,6 @@
 # Dependencias de ejecución. Versiones fijadas para builds reproducibles;
 # Dependabot propone las actualizaciones.
-fastapi==0.142.2
+fastapi==0.143.0
 uvicorn==0.54.0
 pydantic==2.13.5
 pydantic-settings==2.15.0
