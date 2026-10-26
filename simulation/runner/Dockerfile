@@ -1,6 +1,6 @@
 # Runner autohospedado de GitHub Actions para la simulación local.
 # Imagen oficial del runner (incluye Docker CLI, buildx, git, jq y curl) más AWS CLI v2.
-FROM ghcr.io/actions/actions-runner:2.337.0@sha256:e5496277be5d09bc968b3d64911b74e219ac4a3f2edce956a3ecf9271bea1ef4
+FROM ghcr.io/actions/actions-runner:2.338.2@sha256:759a1d94a15b05941aba5196974ff43fe15b4cbba29b694b35cbc32a1166b232
 
 USER root
 RUN ARCH="$(uname -m)" \
