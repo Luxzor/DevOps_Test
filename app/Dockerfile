@@ -2,7 +2,7 @@
 # Imagen base fijada por digest: builds reproducibles y Dependabot propone las actualizaciones.
 
 # ---------- Etapa 1: dependencias ----------
-FROM python:3.12-slim@sha256:02108f5d322dd89f1c9e552442c25acb0543dfdbc455693a5599624f20d9155d AS builder
+FROM python:3.15-slim@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 AS builder
 
 ENV PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
@@ -17,7 +17,7 @@ COPY requirements.txt .
 RUN pip install --require-virtualenv -r requirements.txt
 
 # ---------- Etapa 2: runtime ----------
-FROM python:3.12-slim@sha256:02108f5d322dd89f1c9e552442c25acb0543dfdbc455693a5599624f20d9155d AS runtime
+FROM python:3.15-slim@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928 AS runtime
 
 # Valores no secretos que identifican la build. Se fijan una vez y viajan con la imagen,
 # por eso la misma imagen reporta el mismo commit en dev, staging y prod.
